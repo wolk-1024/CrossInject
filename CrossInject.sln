@@ -1,9 +1,9 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 14
-VisualStudioVersion = 14.0.25420.1
+# Visual Studio Version 17
+VisualStudioVersion = 17.1.32421.90
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Inject", "Inject.vcxproj", "{9784A476-E284-4C17-A5DD-C125E904A45B}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CrossInject", "Inject.vcxproj", "{9784A476-E284-4C17-A5DD-C125E904A45B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -14,7 +14,6 @@ Global
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{9784A476-E284-4C17-A5DD-C125E904A45B}.Debug|x64.ActiveCfg = Debug|x64
-		{9784A476-E284-4C17-A5DD-C125E904A45B}.Debug|x64.Build.0 = Debug|x64
 		{9784A476-E284-4C17-A5DD-C125E904A45B}.Debug|x86.ActiveCfg = Debug|Win32
 		{9784A476-E284-4C17-A5DD-C125E904A45B}.Debug|x86.Build.0 = Debug|Win32
 		{9784A476-E284-4C17-A5DD-C125E904A45B}.Release|x64.ActiveCfg = Release|x64
@@ -24,5 +23,8 @@ Global
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {37B69DEA-D028-4043-B15E-7638B72C4CD2}
 	EndGlobalSection
 EndGlobal

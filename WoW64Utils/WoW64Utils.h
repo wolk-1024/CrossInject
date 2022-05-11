@@ -727,7 +727,7 @@ NtWow64FreeVirtualMemory64(
 */
 NTSTATUS
 NTAPI
-NtWoW64ProtectVirtualMemory64(
+NtWow64ProtectVirtualMemory64(
 	_In_    HANDLE ProcessHandle,
 	_Inout_ DWORD64 *BaseAddress,
 	_Inout_ DWORD64 *NumberOfBytesToProtect,

@@ -21,9 +21,12 @@
     <ClCompile Include="WoW64Utils\WoW64Utils.c">
       <Filter>Файлы исходного кода</Filter>
     </ClCompile>
+    <ClCompile Include="CrossInject.cpp">
+      <Filter>Файлы исходного кода</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Inject.hpp">
+    <ClInclude Include="CrossInject.hpp">
       <Filter>Заголовочные файлы</Filter>
     </ClInclude>
     <ClInclude Include="WoW64Utils\WoW64Utils.h">
