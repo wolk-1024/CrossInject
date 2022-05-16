@@ -1,9 +1,11 @@
-start Notepad++.exe
+set TargetProcess=Notepad++.exe
 
-..\Debug\CrossInject.exe --ProcessName Notepad++.exe --DllPath TestDll64.dll
+set TargetDll=TestDll64.dll
+
+..\Debug\CrossInject.exe --ProcessName %TargetProcess% --DllPath %TargetDll%
 
 pause
 
-..\Debug\CrossInject.exe --ProcessName Notepad++.exe --DllPath TestDll64.dll --Unload
+..\Debug\CrossInject.exe --ProcessName %TargetProcess% --DllPath %TargetDll% --Unload
 
 pause

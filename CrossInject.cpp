@@ -21,6 +21,13 @@
 
 /*
 */
+static void RtlSetLastError(NTSTATUS NtStatus) // RtlSetLastWin32ErrorAndNtStatusFromNtStatus
+{
+	SetLastError(RtlNtStatusToDosError(NtStatus));
+}
+
+/*
+*/
 DWORD GetProcessBit(_In_ HANDLE ProcessHandle)
 {
 	typedef BOOL(WINAPI* pfnIsWow64Process)(HANDLE, PBOOL);
@@ -68,13 +75,6 @@ BOOLEAN Is64BitOS()
 	GetNativeSystemInfo(&SystemInfo);
 
 	return SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64;
-}
-
-/*
-*/
-static void RtlSetLastError(DWORD Status) // RtlSetLastWin32ErrorAndNtStatusFromNtStatus
-{
-	RtlSetLastWin32Error(RtlNtStatusToDosError(Status));
 }
 
 /*
@@ -143,10 +143,10 @@ DWORD GetDllArch(_In_ LPCWSTR DllPath)
 		{
 			switch (NtHeaders.FileHeader.Machine)
 			{
-			    case IMAGE_FILE_MACHINE_AMD64 : Result = 64;
-				    break;
-			    case IMAGE_FILE_MACHINE_I386  : Result = 32;
-				    break;
+			case IMAGE_FILE_MACHINE_AMD64: Result = 64;
+				break;
+			case IMAGE_FILE_MACHINE_I386: Result = 32;
+				break;
 			}
 		}
 		CloseHandle(FileHandle);
@@ -211,11 +211,23 @@ HANDLE OpenProcessByName(_In_ LPCWSTR ProcessName, _In_ ACCESS_MASK DesiredAcces
 
 /*
 */
-DWORD GetRemoteModuleHandle32(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName)
+static void ExtractFileName(_In_ LPCWSTR FullPath, _Out_ LPWSTR OutBuffer, _In_ SIZE_T BufferCount)
 {
-	DWORD ModuleHandle = 0;
+	WCHAR TempName[_MAX_FNAME] = { 0 };
 
-	HANDLE hModuleSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetProcessId(ProcessHandle));
+	WCHAR TempExt[_MAX_EXT] = { 0 };
+
+	_wsplitpath_s(FullPath, NULL, 0, NULL, 0, TempName, _MAX_FNAME, TempExt, _MAX_EXT);
+
+	_wmakepath_s(OutBuffer, BufferCount, NULL, NULL, TempName, TempExt);
+}
+
+/*
+static HMODULE GetRemoteModuleHandle(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName)
+{
+	HMODULE ModuleHandle = 0;
+
+	HANDLE hModuleSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE32 | TH32CS_SNAPMODULE, GetProcessId(ProcessHandle));
 
 	if (hModuleSnap != INVALID_HANDLE_VALUE)
 	{
@@ -226,9 +238,10 @@ DWORD GetRemoteModuleHandle32(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName
 		if (Module32FirstW(hModuleSnap, &ModuleEntry))
 		{
 			do {
-				if (_wcsicmp(ModuleName, ModuleEntry.szModule) == 0)
+				if ((_wcsicmp(ModuleName, ModuleEntry.szModule) == 0) ||
+					(_wcsicmp(ModuleName, ModuleEntry.szExePath) == 0))
 				{
-					ModuleHandle = (DWORD)ModuleEntry.hModule;
+					ModuleHandle = ModuleEntry.hModule;
 
 					break;
 				}
@@ -238,10 +251,70 @@ DWORD GetRemoteModuleHandle32(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName
 	}
 	return ModuleHandle;
 }
+*/
+
+/*
+   DllArch - разрядность искомой библиотеки. (32 или 64)
+*/
+static HMODULE GetRemoteModuleHandle(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName, _In_ DWORD DllArch)
+{
+	DWORD cbNeeded;
+
+	HMODULE Result = NULL;
+
+	DWORD Flags = (DllArch == 32) ? LIST_MODULES_32BIT : (DllArch == 64) ? LIST_MODULES_64BIT : LIST_MODULES_ALL;
+
+	if (!EnumProcessModulesEx(ProcessHandle, NULL, NULL, &cbNeeded, Flags))
+		return NULL;
+
+	HMODULE* hModules = (HMODULE*)LocalAlloc(LPTR, cbNeeded);
+
+	if (hModules)
+	{
+		if (EnumProcessModulesEx(ProcessHandle, hModules, cbNeeded, &cbNeeded, Flags))
+		{
+			for (unsigned int i = 0; i < cbNeeded / sizeof(HMODULE); i++)
+			{
+				WCHAR FullDllName[MAX_PATH] = { 0 };
+
+				if (!GetModuleFileNameExW(ProcessHandle, hModules[i], FullDllName, _countof(FullDllName)))
+					break;
+
+				WCHAR ShortDllName[_MAX_FNAME] = { 0 };
+
+				ExtractFileName(FullDllName, ShortDllName, _countof(ShortDllName));
+
+				if ((_wcsicmp(ModuleName, ShortDllName) == 0) ||
+					(_wcsicmp(ModuleName, FullDllName) == 0))
+				{
+					Result = hModules[i];
+
+					break;
+				}
+			}
+		}
+		LocalFree(hModules);
+	}
+	return Result;
+}
 
 /*
 */
-DWORD64 GetRemoteModuleHandle64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName)
+static HMODULE GetRemoteModuleHandleA(_In_ HANDLE ProcessHandle, _In_ LPCSTR ModuleName, _In_ DWORD DllArch)
+{
+	WCHAR TempName[_MAX_PATH] = { 0 };
+
+	int Length = MultiByteToWideChar(CP_ACP, 0, ModuleName, -1, NULL, 0);
+
+	MultiByteToWideChar(CP_ACP, 0, ModuleName, -1, TempName, Length);
+
+	return GetRemoteModuleHandle(ProcessHandle, TempName, DllArch);
+}
+
+/*
+*/
+#ifdef _M_IX86
+static DWORD64 GetRemoteModuleHandleWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName)
 {
 	DWORD64 ModuleHandle = 0;
 
@@ -263,12 +336,6 @@ DWORD64 GetRemoteModuleHandle64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleNa
 
 			if (NT_SUCCESS(Status))
 			{
-				WCHAR BaseDllName[_MAX_FNAME] = { 0 };
-
-				_wsplitpath_s(ModuleName, NULL, 0, NULL, 0, BaseDllName, _MAX_FNAME, NULL, 0);
-
-				WCHAR RemoteModuleName[_MAX_FNAME] = { 0 };
-
 				DWORD64 FirstModule = Ldr.InLoadOrderModuleList.Flink;
 
 				DWORD64 NextModule = FirstModule;
@@ -287,18 +354,19 @@ DWORD64 GetRemoteModuleHandle64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleNa
 						break;
 					}
 
-					//RtlSecureZeroMemory(RemoteModuleName, sizeof(RemoteModuleName));
+					WCHAR FullDllName[MAX_PATH] = { 0 };
 
-					_wcsnset_s(RemoteModuleName, '\0', _countof(RemoteModuleName));
-
-					Status = NtWow64ReadVirtualMemory64(ProcessHandle, DataTableEntry.BaseDllName.Buffer, &RemoteModuleName, DataTableEntry.BaseDllName.MaximumLength, NULL);
+					Status = NtWow64ReadVirtualMemory64(ProcessHandle, DataTableEntry.FullDllName.Buffer, &FullDllName, DataTableEntry.FullDllName.MaximumLength, NULL);
 
 					if (!NT_SUCCESS(Status))
 						break;
 
-					_wsplitpath_s(RemoteModuleName, NULL, 0, NULL, 0, RemoteModuleName, _MAX_FNAME, NULL, 0);
+					WCHAR ShortDllName[_MAX_FNAME] = { 0 };
 
-					if (_wcsicmp(BaseDllName, RemoteModuleName) == 0)
+					ExtractFileName(FullDllName, ShortDllName, _countof(ShortDllName));
+
+					if ((_wcsicmp(ModuleName, ShortDllName) == 0) ||
+						(_wcsicmp(ModuleName, FullDllName) == 0))
 					{
 						ModuleHandle = DataTableEntry.DllBase;
 
@@ -316,30 +384,7 @@ DWORD64 GetRemoteModuleHandle64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleNa
 	return ModuleHandle;
 }
 
-/*
-	IsWoW64 - Поиск 64-битного dll в АП 32-х битного процесса. (ntdll.dll, wow64.dll, wow64cpu.dll etc)
-*/
-DWORD64 GetRemoteModuleHandle(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName, _In_opt_ BOOLEAN IsWoW64)
-{
-	switch (GetProcessBit(ProcessHandle))
-	{
-	    case 32: {
-			if (IsWoW64)
-				return GetRemoteModuleHandle64(ProcessHandle, ModuleName);
-			else
-				return GetRemoteModuleHandle32(ProcessHandle, ModuleName);
-			break;
-	    }
-	    case 64: return GetRemoteModuleHandle64(ProcessHandle, ModuleName);
-		    break;
-
-	    default: return 0;
-	}
-}
-
-/*
-*/
-DWORD64 GetRemoteModuleHandleA(_In_ HANDLE ProcessHandle, _In_ LPCSTR ModuleName, _In_opt_ BOOLEAN IsWoW64)
+static DWORD64 GetRemoteModuleHandleWoW64A(_In_ HANDLE ProcessHandle, _In_ LPCSTR ModuleName)
 {
 	WCHAR TempName[_MAX_PATH] = { 0 };
 
@@ -347,12 +392,172 @@ DWORD64 GetRemoteModuleHandleA(_In_ HANDLE ProcessHandle, _In_ LPCSTR ModuleName
 
 	MultiByteToWideChar(CP_ACP, 0, ModuleName, -1, TempName, Length);
 
-	return GetRemoteModuleHandle(ProcessHandle, TempName, IsWoW64);
+	return GetRemoteModuleHandleWoW64(ProcessHandle, TempName);
+}
+#endif
+
+/*
+	x64DllFrom32 - Поиск 64-битного dll в АП 32-х битного процесса. (ntdll.dll, wow64.dll, wow64cpu.dll etc)
+*/
+DWORD64 CrossGetRemoteModuleHandle(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName, _In_opt_ BOOLEAN x64DllFrom32 = FALSE)
+{
+	int ProcessBit = GetProcessBit(ProcessHandle);
+
+	if (ProcessBit == 32)
+	{
+#ifdef _M_IX86
+		if (x64DllFrom32 && IsWoW64())
+			return GetRemoteModuleHandleWoW64(ProcessHandle, ModuleName);
+#else
+		if (x64DllFrom32)
+			return (DWORD64)GetRemoteModuleHandle(ProcessHandle, ModuleName, 64);
+#endif
+		return (DWORD64)GetRemoteModuleHandle(ProcessHandle, ModuleName, 32);
+	}
+	else if (ProcessBit == 64)
+	{
+#ifdef _M_IX86
+		if (IsWoW64())
+			return GetRemoteModuleHandleWoW64(ProcessHandle, ModuleName);
+#else
+		return (DWORD64)GetRemoteModuleHandle(ProcessHandle, ModuleName, 64);
+#endif
+	}
+	return 0;
 }
 
 /*
 */
-DWORD64 GetRemoteProcedureAddress64(_In_ HANDLE ProcessHandle, _In_ DWORD64 ModuleBase, _In_ LPCSTR ProcedureName)
+static PVOID GetRemoteProcedureAddress(_In_ HANDLE ProcessHandle, _In_ HMODULE ModuleBase, _In_ LPCSTR ProcedureName)
+{
+	if (!ModuleBase)
+		return 0;
+
+	PVOID ProcedureAddress = 0;
+
+	IMAGE_DOS_HEADER DosHeader = { 0 };
+
+	if (ReadProcessMemory(ProcessHandle, ModuleBase, &DosHeader, sizeof(DosHeader), NULL))
+	{
+		if (DosHeader.e_magic != IMAGE_DOS_SIGNATURE)
+			return 0;
+
+		IMAGE_NT_HEADERS NtHeaders = { 0 };
+
+		if (ReadProcessMemory(ProcessHandle, (PVOID)((LPBYTE)ModuleBase + DosHeader.e_lfanew), &NtHeaders, sizeof(NtHeaders), NULL))
+		{
+			if (NtHeaders.Signature != IMAGE_NT_SIGNATURE)
+				return 0;
+
+			IMAGE_DATA_DIRECTORY DataDirectory = { 0 };
+
+			switch (NtHeaders.FileHeader.Machine)
+			{
+			case IMAGE_FILE_MACHINE_AMD64: DataDirectory = NtHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+				break;
+
+			case IMAGE_FILE_MACHINE_I386: DataDirectory = PIMAGE_NT_HEADERS32(&NtHeaders)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+				break;
+
+			default: return 0;
+			}
+
+			if (DataDirectory.VirtualAddress == 0)
+				return 0;
+
+			IMAGE_EXPORT_DIRECTORY ExportDirectory = { 0 };
+
+			if (ReadProcessMemory(ProcessHandle, (PVOID)((LPBYTE)ModuleBase + DataDirectory.VirtualAddress), &ExportDirectory, sizeof(ExportDirectory), NULL))
+			{
+				WORD FunctionIndex = -1;
+				PVOID AddressOfNames = (PVOID)((LPBYTE)ModuleBase + ExportDirectory.AddressOfNames);
+				PVOID AddressOfNameOrdinals = (PVOID)((LPBYTE)ModuleBase + ExportDirectory.AddressOfNameOrdinals);
+
+				if (((SIZE_T)ProcedureName & 0xffff0000) == 0)
+				{
+					DWORD Ordinal = LOWORD(ProcedureName);
+
+					if ((Ordinal < ExportDirectory.Base) || (Ordinal >= (ExportDirectory.Base + ExportDirectory.NumberOfFunctions))) // Если ординал меньше базого значения или больше количества экспортируемых функций.
+						return 0;
+					else
+						FunctionIndex = (WORD)(Ordinal - ExportDirectory.Base);
+				}
+				else
+				{
+					DWORD NameRVA = 0;
+
+					for (DWORD IndexName = 0; IndexName < ExportDirectory.NumberOfNames - 1; IndexName++)
+					{
+						if (ReadProcessMemory(ProcessHandle, ((LPBYTE)AddressOfNames + (IndexName * sizeof(IndexName))), &NameRVA, sizeof(NameRVA), NULL))
+						{
+							CHAR RemoteProcedureName[_MAX_FNAME] = { 0 };
+
+							if (ReadProcessMemory(ProcessHandle, (PVOID)((LPBYTE)ModuleBase + NameRVA), &RemoteProcedureName, sizeof(RemoteProcedureName), NULL))
+							{
+								if (strcmp(ProcedureName, RemoteProcedureName) == 0)
+								{
+									if (!ReadProcessMemory(ProcessHandle, (PVOID)((LPBYTE)AddressOfNameOrdinals + (IndexName * sizeof(FunctionIndex))), &FunctionIndex, sizeof(FunctionIndex), NULL))
+										return 0;
+									else
+										break;
+								}
+							}
+						}
+					}
+				}
+				if (FunctionIndex < 0)
+					return 0;
+
+				DWORD ProcedureRVA = 0;
+
+				PVOID AddressOfFunctions = (PVOID)((LPBYTE)ModuleBase + ExportDirectory.AddressOfFunctions);
+
+				if (ReadProcessMemory(ProcessHandle, (PVOID)((LPBYTE)AddressOfFunctions + (FunctionIndex * sizeof(ProcedureRVA))), &ProcedureRVA, sizeof(ProcedureRVA), NULL))
+				{
+					ProcedureAddress = (PVOID)((LPBYTE)ModuleBase + ProcedureRVA);
+
+					if ((SIZE_T)ProcedureAddress >= (DataDirectory.VirtualAddress + (SIZE_T)ModuleBase) && (SIZE_T)ProcedureAddress < (DataDirectory.VirtualAddress + (SIZE_T)ModuleBase + DataDirectory.Size)) // Forwarded export
+					{
+						CHAR ForwardedName[_MAX_FNAME] = { 0 };
+
+						if (ReadProcessMemory(ProcessHandle, ProcedureAddress, &ForwardedName, sizeof(ForwardedName), NULL))
+						{
+							PCHAR ProcName = NULL;
+
+							PCHAR ShortDllName = strtok_s(ForwardedName, ".", &ProcName);
+
+							if (!ShortDllName || !ProcName)
+								return 0;
+
+							if (strchr(ProcName, '#')) // Ординал
+							{
+								PCHAR Temp = NULL;
+
+								PCHAR Ordinal = strtok_s(ProcName, "#", &Temp);
+
+								ProcName = (PCHAR)(WORD)atoi(Ordinal);
+							}
+							CHAR DllName[_MAX_FNAME] = { 0 };
+
+							strcat_s(DllName, ShortDllName);
+
+							strcat_s(DllName, ".DLL");
+
+							ProcedureAddress = GetRemoteProcedureAddress(ProcessHandle, GetRemoteModuleHandleA(ProcessHandle, DllName, 0), ProcName);
+						}
+					}
+				}
+			}
+		}
+	}
+	return ProcedureAddress;
+}
+
+#ifdef _M_IX86
+/*
+   Fixme: как-нибудь объеденить с GetRemoteProcedureAddress
+*/
+static DWORD64 GetRemoteProcedureAddressWoW64(_In_ HANDLE ProcessHandle, _In_ DWORD64 ModuleBase, _In_ LPCSTR ProcedureName)
 {
 	if (!ModuleBase)
 		return 0;
@@ -381,13 +586,13 @@ DWORD64 GetRemoteProcedureAddress64(_In_ HANDLE ProcessHandle, _In_ DWORD64 Modu
 
 			switch (NtHeaders.FileHeader.Machine)
 			{
-			    case IMAGE_FILE_MACHINE_AMD64: DataDirectory = NtHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-				    break;
+			case IMAGE_FILE_MACHINE_AMD64: DataDirectory = NtHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+				break;
 
-			    case IMAGE_FILE_MACHINE_I386: DataDirectory = PIMAGE_NT_HEADERS32(&NtHeaders)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-				    break;
+			case IMAGE_FILE_MACHINE_I386: DataDirectory = PIMAGE_NT_HEADERS32(&NtHeaders)->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+				break;
 
-			    default: return 0;
+			default: return 0;
 			}
 
 			if (DataDirectory.VirtualAddress == 0)
@@ -416,17 +621,13 @@ DWORD64 GetRemoteProcedureAddress64(_In_ HANDLE ProcessHandle, _In_ DWORD64 Modu
 				{
 					DWORD NameRVA = 0;
 
-					CHAR RemoteProcedureName[_MAX_FNAME] = { 0 };
-
 					for (DWORD IndexName = 0; IndexName < ExportDirectory.NumberOfNames - 1; IndexName++)
 					{
 						Status = NtWow64ReadVirtualMemory64(ProcessHandle, AddressOfNames + (IndexName * sizeof(IndexName)), &NameRVA, sizeof(NameRVA), NULL);
 
 						if (NT_SUCCESS(Status))
 						{
-							//RtlSecureZeroMemory(&RemoteProcedureName, sizeof(RemoteProcedureName));
-
-							_strnset_s(RemoteProcedureName, '\0', _countof(RemoteProcedureName));
+							CHAR RemoteProcedureName[_MAX_FNAME] = { 0 };
 
 							Status = NtWow64ReadVirtualMemory64(ProcessHandle, ModuleBase + NameRVA, &RemoteProcedureName, sizeof(RemoteProcedureName), NULL);
 
@@ -435,6 +636,7 @@ DWORD64 GetRemoteProcedureAddress64(_In_ HANDLE ProcessHandle, _In_ DWORD64 Modu
 								if (strcmp(ProcedureName, RemoteProcedureName) == 0)
 								{
 									Status = NtWow64ReadVirtualMemory64(ProcessHandle, AddressOfNameOrdinals + (IndexName * sizeof(FunctionIndex)), &FunctionIndex, sizeof(FunctionIndex), NULL);
+
 									break;
 								}
 							}
@@ -453,7 +655,7 @@ DWORD64 GetRemoteProcedureAddress64(_In_ HANDLE ProcessHandle, _In_ DWORD64 Modu
 					{
 						ProcedureAddress = ModuleBase + ProcedureRVA;
 
-						if (ProcedureAddress >= DataDirectory.VirtualAddress && ProcedureAddress < (DataDirectory.VirtualAddress + DataDirectory.Size))
+						if (ProcedureAddress >= (DataDirectory.VirtualAddress + ModuleBase) && ProcedureAddress < (DataDirectory.VirtualAddress + ModuleBase + DataDirectory.Size))
 						{
 							CHAR ForwardedName[_MAX_FNAME] = { 0 };
 
@@ -461,20 +663,28 @@ DWORD64 GetRemoteProcedureAddress64(_In_ HANDLE ProcessHandle, _In_ DWORD64 Modu
 
 							if (NT_SUCCESS(Status))
 							{
-								PCHAR pProcName = strchr(ForwardedName, '.');
+								PCHAR ProcName = NULL;
 
-								if (!pProcName)
+								PCHAR ShortDllName = strtok_s(ForwardedName, ".", &ProcName);
+
+								if (!ShortDllName || !ProcName)
 									return 0;
 
-								*pProcName++ = '\0';
-
-								if (*pProcName == '#')
+								if (strchr(ProcName, '#')) // Ординал
 								{
-									*pProcName++ = '\0';
+									PCHAR Temp = NULL;
 
-									pProcName = (PCHAR)(WORD)atoi(pProcName);
+									PCHAR Ordinal = strtok_s(ProcName, "#", &Temp);
+
+									ProcName = (PCHAR)(WORD)atoi(Ordinal);
 								}
-								ProcedureAddress = GetRemoteProcedureAddress64(ProcessHandle, GetRemoteModuleHandleA(ProcessHandle, ForwardedName, FALSE), pProcName);
+								CHAR DllName[_MAX_FNAME] = { 0 };
+
+								strcat_s(DllName, ShortDllName);
+
+								strcat_s(DllName, ".DLL");
+
+								ProcedureAddress = GetRemoteProcedureAddressWoW64(ProcessHandle, GetRemoteModuleHandleWoW64A(ProcessHandle, DllName), ProcName);
 							}
 						}
 					}
@@ -486,127 +696,91 @@ DWORD64 GetRemoteProcedureAddress64(_In_ HANDLE ProcessHandle, _In_ DWORD64 Modu
 
 	return ProcedureAddress;
 }
+#endif
 
 /*
+   x64ProcFrom32 - Поиск 64-битной функции в АП 32-х битного процесса.
 */
-DWORD GetRemoteProcedureAddress(_In_ HANDLE ProcessHandle, _In_ HANDLE ModuleBase, _In_ LPCSTR ProcedureName)
+DWORD64 CrossGetRemoteProcedureAddress(_In_ HANDLE ProcessHandle, _In_ DWORD64 ModuleBase, _In_ LPCSTR ProcedureName, _In_opt_ BOOLEAN x64ProcFrom32)
 {
-	if (!ModuleBase)
-		return 0;
-
-	DWORD ProcedureAddress = 0;
-
-	IMAGE_DOS_HEADER ImageDosHeader = { 0 };
-
-	if (ReadProcessMemory(ProcessHandle, ModuleBase, &ImageDosHeader, sizeof(ImageDosHeader), NULL))
-	{
-		if (ImageDosHeader.e_magic != IMAGE_DOS_SIGNATURE)
-			return 0;
-
-		IMAGE_NT_HEADERS ImageNtHeaders = { 0 };
-
-		if (ReadProcessMemory(ProcessHandle, (PVOID)((LPBYTE)ModuleBase + ImageDosHeader.e_lfanew), &ImageNtHeaders, sizeof(ImageNtHeaders), NULL))
-		{
-			if (ImageNtHeaders.Signature != IMAGE_NT_SIGNATURE)
-				return 0;
-
-			IMAGE_DATA_DIRECTORY DataDirectory = ImageNtHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-
-			if (DataDirectory.VirtualAddress == 0)
-				return 0;
-
-			IMAGE_EXPORT_DIRECTORY ExportDirectory = { 0 };
-
-			if (ReadProcessMemory(ProcessHandle, (PVOID)((LPBYTE)ModuleBase + DataDirectory.VirtualAddress), &ExportDirectory, sizeof(ExportDirectory), NULL))
-			{
-				WORD FunctionIndex = -1;
-				PVOID AddressOfNames = (PVOID)((LPBYTE)ModuleBase + ExportDirectory.AddressOfNames);
-				PVOID AddressOfNameOrdinals = (PVOID)((LPBYTE)ModuleBase + ExportDirectory.AddressOfNameOrdinals);
-
-				if (((SIZE_T)ProcedureName & 0xffff0000) == 0)
-				{
-					DWORD Ordinal = LOWORD(ProcedureName);
-
-					if ((Ordinal < ExportDirectory.Base) || (Ordinal >= (ExportDirectory.Base + ExportDirectory.NumberOfFunctions))) // Если ординал меньше базого значения или больше количества экспортируемых функций.
-						return 0;
-					else
-						FunctionIndex = (WORD)(Ordinal - ExportDirectory.Base);
-				}
-				else
-				{
-					DWORD NameRVA = 0;
-
-					CHAR RemoteProcedureName[_MAX_FNAME] = { 0 };
-
-					for (DWORD IndexName = 0; IndexName < ExportDirectory.NumberOfNames - 1; IndexName++)
-					{
-						if (ReadProcessMemory(ProcessHandle, ((LPBYTE)AddressOfNames + (IndexName * sizeof(IndexName))), &NameRVA, sizeof(NameRVA), NULL))
-						{
-							//RtlSecureZeroMemory(&RemoteProcedureName, sizeof(RemoteProcedureName));
-
-							_strnset_s(RemoteProcedureName, '\0', _countof(RemoteProcedureName));
-
-							if (ReadProcessMemory(ProcessHandle, (PVOID)((LPBYTE)ModuleBase + NameRVA), &RemoteProcedureName, sizeof(RemoteProcedureName), NULL))
-							{
-								if (strcmp(ProcedureName, RemoteProcedureName) == 0)
-								{
-									if (!ReadProcessMemory(ProcessHandle, (PVOID)((LPBYTE)AddressOfNameOrdinals + (IndexName * sizeof(FunctionIndex))), &FunctionIndex, sizeof(FunctionIndex), NULL))
-										return 0;
-									else
-										break;
-								}
-							}
-						}
-					}
-				}
-				if (FunctionIndex < 0)
-					return 0;
-
-				DWORD ProcedureRVA = 0;
-
-				PVOID AddressOfFunctions = (PVOID)((LPBYTE)ModuleBase + ExportDirectory.AddressOfFunctions);
-
-				if (ReadProcessMemory(ProcessHandle, (PVOID)((LPBYTE)AddressOfFunctions + (FunctionIndex * sizeof(ProcedureRVA))), &ProcedureRVA, sizeof(ProcedureRVA), NULL))
-				{
-					ProcedureAddress = (DWORD)((LPBYTE)ModuleBase + ProcedureRVA);
-
-					if ((SIZE_T)ProcedureAddress >= DataDirectory.VirtualAddress && (SIZE_T)ProcedureAddress < (DataDirectory.VirtualAddress + DataDirectory.Size))
-					{
-						CHAR ForwardedName[_MAX_FNAME] = { 0 };
-
-						if (ReadProcessMemory(ProcessHandle, (PVOID)ProcedureAddress, &ForwardedName, sizeof(ForwardedName), NULL))
-						{
-							PCHAR pProcName = strchr(ForwardedName, '.'); //
-
-							*pProcName++ = '\0';
-
-							if (*pProcName == '#') //
-							{
-								*pProcName++ = '\0';
-
-								pProcName = (PCHAR)(WORD)atoi(pProcName);
-							}
-							ProcedureAddress = GetRemoteProcedureAddress(ProcessHandle, (HANDLE)GetRemoteModuleHandleA(ProcessHandle, ForwardedName, FALSE), pProcName);
-						}
-					}
-				}
-			}
-		}
-	}
-	return ProcedureAddress;
+#ifdef _M_IX86
+	if (x64ProcFrom32)
+		return GetRemoteProcedureAddressWoW64(ProcessHandle, ModuleBase, ProcedureName);
+#endif
+	return (DWORD64)GetRemoteProcedureAddress(ProcessHandle, (HMODULE)ModuleBase, ProcedureName);
 }
 
 #ifdef METHOD_INJECT1
 /*
+*/
+BOOLEAN InjectDll(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_ PVOID* DllBase, _In_opt_ BOOLEAN UnloadDll)
+{
+	DWORD Result = FALSE;
+
+	PVOID RemoteRoutine = GetRemoteProcedureAddress(ProcessHandle, GetRemoteModuleHandle(ProcessHandle, L"kernel32.dll"), UnloadDll ? "FreeLibrary" : "LoadLibraryW");
+
+	if (RemoteRoutine)
+	{
+		PVOID RemoteParameter = 0;
+
+		SIZE_T DllNameSize = (wcslen(DllPath) + 1) * sizeof(WCHAR);
+
+		if (!UnloadDll)
+		{
+			RemoteParameter = VirtualAllocEx(ProcessHandle, NULL, DllNameSize, MEM_COMMIT, PAGE_READWRITE);
+
+			if (!RemoteParameter)
+				return FALSE;
+
+			WriteProcessMemory(ProcessHandle, RemoteParameter, (PVOID)DllPath, DllNameSize, NULL);
+		}
+		else
+			RemoteParameter = GetRemoteModuleHandle(ProcessHandle, DllPath);
+
+		if (RemoteParameter)
+		{
+			HANDLE ThreadHandle = 0;
+
+			CLIENT_ID ClientID = { 0 };
+
+			NTSTATUS Status = RtlCreateUserThread(ProcessHandle, NULL, FALSE, 0, 0, 0, (PUSER_THREAD_START_ROUTINE)RemoteRoutine, RemoteParameter, &ThreadHandle, &ClientID);
+
+			if (NT_SUCCESS(Status))
+			{
+				if (WaitForSingleObject(ThreadHandle, INFINITE) != WAIT_FAILED)
+				{
+					if (!UnloadDll)
+					{
+						HMODULE RemoteDll = GetRemoteModuleHandle(ProcessHandle, DllPath);
+
+						Result = ((SIZE_T)RemoteDll > 0);
+
+						if (DllBase)
+							*DllBase = RemoteDll;
+					}
+					else
+						GetExitCodeThread((HANDLE)ThreadHandle, &Result);
+				}
+				CloseHandle(ThreadHandle);
+			}
+		}
+		if (!UnloadDll && RemoteParameter)
+			VirtualFreeEx(ProcessHandle, RemoteParameter, 0, MEM_RELEASE);
+	}
+	return Result > 0;
+}
+
+/*
    WoW64 -> x64
 */
-BOOLEAN InjectDllWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_ BOOLEAN UnloadDll, _In_opt_ PDWORD64 DllBase)
+#ifdef _M_IX86
+static BOOLEAN InjectDllWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_ PDWORD64 DllBase, _In_opt_ BOOLEAN UnloadDll)
 {
 	DWORD Result = FALSE;
 
 	NTSTATUS Status = STATUS_SUCCESS;
 
-	DWORD64 RemoteRoutine = GetRemoteProcedureAddress64(ProcessHandle, GetRemoteModuleHandle64(ProcessHandle, L"kernel32.dll"), UnloadDll ? "FreeLibrary" : "LoadLibraryW");
+	DWORD64 RemoteRoutine = GetRemoteProcedureAddressWoW64(ProcessHandle, GetRemoteModuleHandleWoW64(ProcessHandle, L"kernel32.dll"), UnloadDll ? "FreeLibrary" : "LoadLibraryW");
 
 	if (RemoteRoutine)
 	{
@@ -624,7 +798,7 @@ BOOLEAN InjectDllWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_
 			Status = NtWow64WriteVirtualMemory64(ProcessHandle, RemoteParameter, (PDWORD64)DllPath, DllNameSize, NULL);
 		}
 		else
-			RemoteParameter = GetRemoteModuleHandle64(ProcessHandle, DllPath);
+			RemoteParameter = GetRemoteModuleHandleWoW64(ProcessHandle, DllPath);
 
 		if (NT_SUCCESS(Status) && RemoteParameter)
 		{
@@ -632,18 +806,20 @@ BOOLEAN InjectDllWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_
 
 			WOW64_CLIENT_ID64 ClientID = { 0 };
 
-			NTSTATUS Status = RtlWow64CreateUserThread64(ProcessHandle, NULL, FALSE, 0, 0, 0, RemoteRoutine, RemoteParameter, &ThreadHandle, &ClientID);
+			Status = RtlWow64CreateUserThread64(ProcessHandle, NULL, FALSE, 0, 0, 0, RemoteRoutine, RemoteParameter, &ThreadHandle, &ClientID);
 
 			if (NT_SUCCESS(Status))
 			{
 				if (WaitForSingleObject((HANDLE)ThreadHandle, INFINITE) != WAIT_FAILED)
 				{
-					if (!UnloadDll && DllBase)
+					if (!UnloadDll)
 					{
-						*DllBase = GetRemoteModuleHandle64(ProcessHandle, DllPath);
+						DWORD64 RemoteDll = GetRemoteModuleHandleWoW64(ProcessHandle, DllPath);
 
-						if (*DllBase)
-							Result = TRUE;
+						Result = (RemoteDll > 0);
+
+						if (DllBase)
+							*DllBase = RemoteDll;
 					}
 					else
 						GetExitCodeThread((HANDLE)ThreadHandle, &Result);
@@ -658,123 +834,141 @@ BOOLEAN InjectDllWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_
 			NtWow64FreeVirtualMemory64(ProcessHandle, &RemoteParameter, &DllNameSize, MEM_RELEASE);
 		}
 	}
-	return (BOOLEAN)Result;
+	return Result > 0;
 }
-
-/*
-   x32 -> x32
-*/
-BOOLEAN InjectDll(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_ BOOLEAN UnloadDll, _In_opt_ PDWORD DllBase)
-{
-	BOOLEAN Result = FALSE;
-
-	DWORD RemoteRoutine = GetRemoteProcedureAddress(ProcessHandle, (HANDLE)GetRemoteModuleHandle(ProcessHandle, L"kernel32.dll", FALSE), UnloadDll ? "FreeLibrary" : "LoadLibraryW");
-
-	if (RemoteRoutine)
-	{
-		PVOID RemoteParameter = 0;
-
-		DWORD DllNameSize = (wcslen(DllPath) + 1) * sizeof(WCHAR);
-
-		if (!UnloadDll)
-		{
-			RemoteParameter = VirtualAllocEx(ProcessHandle, NULL, DllNameSize, MEM_COMMIT, PAGE_READWRITE);
-
-			if (!RemoteParameter)
-				return FALSE;
-
-			WriteProcessMemory(ProcessHandle, RemoteParameter, (PVOID)DllPath, DllNameSize, NULL);
-		}
-		else
-			RemoteParameter = (PVOID)GetRemoteModuleHandle(ProcessHandle, DllPath, FALSE);
-
-		if (RemoteParameter)
-		{
-			HANDLE ThreadHandle = 0;
-
-			CLIENT_ID ClientID = { 0 };
-
-			NTSTATUS Status = RtlCreateUserThread(ProcessHandle, NULL, FALSE, 0, 0, 0, (PUSER_THREAD_START_ROUTINE)RemoteRoutine, RemoteParameter, &ThreadHandle, &ClientID);
-
-			if (NT_SUCCESS(Status))
-			{
-				if (WaitForSingleObject(ThreadHandle, INFINITE) != WAIT_FAILED)
-				{
-					DWORD Temp = 0;
-
-					GetExitCodeThread(ThreadHandle, (LPDWORD)&Temp);
-
-					if (!UnloadDll && DllBase)
-					{
-						*DllBase = Temp;
-
-						Result = Temp ? TRUE : FALSE;
-					}
-					else
-						Result = (BOOLEAN)Temp;
-				}
-				CloseHandle(ThreadHandle);
-			}
-		}
-		if (!UnloadDll && RemoteParameter)
-			VirtualFreeEx(ProcessHandle, RemoteParameter, 0, MEM_RELEASE);
-	}
-	return Result;
-}
+#endif
 
 #else
 
 /*
-   WoW64 -> x64
 */
-BOOLEAN InjectDllWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_ BOOLEAN UnloadDll, _In_opt_ PDWORD64 DllBase)
+static BOOLEAN InjectDll(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_ PVOID* DllBase, _In_opt_ BOOLEAN UnloadDll)
 {
-	// Shell64.asm
-	static BYTE LoaderDll64[183] = 
-	{
-	    0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x28, 0x53, 0x48, 0x89, 0xCB, 0x48, 0x83, 0xEC, 0x20,
-	    0x48, 0x8D, 0x4D, 0xE8, 0x48, 0x8D, 0x53, 0x28, 0xFF, 0x53, 0x20, 0x48, 0x83, 0xC4, 0x20, 0x48,
-	    0xC7, 0x45, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x48, 0x83, 0xEC, 0x20, 0x48, 0xC7, 0xC1, 0x00, 0x00,
-	    0x00, 0x00, 0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x45, 0xE8, 0x4C, 0x8D, 0x4D,
-	    0xE0, 0xFF, 0x53, 0x18, 0x48, 0x83, 0xC4, 0x20, 0x80, 0x3B, 0x01, 0x75, 0x29, 0x48, 0x83, 0x7D,
-	    0xE0, 0x00, 0x76, 0x22, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x4D, 0xE0, 0xFF, 0x53, 0x10, 0x48,
-	    0x83, 0xC4, 0x20, 0x83, 0xF8, 0x00, 0x75, 0x07, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xEB, 0x05, 0xB8,
-	    0x00, 0x00, 0x00, 0x00, 0xEB, 0x3E, 0x80, 0x3B, 0x00, 0x75, 0x34, 0x48, 0x83, 0xEC, 0x20, 0x48,
-	    0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x45,
-	    0xE8, 0x4C, 0x8D, 0x4D, 0xE0, 0xFF, 0x53, 0x08, 0x48, 0x83, 0xC4, 0x20, 0x83, 0xF8, 0x00, 0x75,
-	    0x07, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xEB, 0x05, 0xB8, 0x00, 0x00, 0x00, 0x00, 0xEB, 0x05, 0xB8,
-	    0x00, 0x00, 0x00, 0x00, 0x5B, 0xC9, 0xC3
-	};
+	BOOLEAN Result = FALSE;
 
-	DWORD Result = FALSE;
+	TDllLoader InjectData = { 0 };
 
-	TDllLoader64 InjectData = { 0 };
+	int ProcessBit = GetProcessBit(ProcessHandle);
+
+	if (!ProcessBit)
+		return FALSE;
+
+	HMODULE hNtdll = GetRemoteModuleHandle(ProcessHandle, L"ntdll.dll", 0);
+
+	if (!hNtdll)
+		return FALSE;
+
+	InjectData.LdrLoadDll = (DWORD64)GetRemoteProcedureAddress(ProcessHandle, hNtdll, "LdrLoadDll");
+
+	if (!InjectData.LdrLoadDll)
+		return FALSE;
+
+	InjectData.LdrUnloadDll = (DWORD64)GetRemoteProcedureAddress(ProcessHandle, hNtdll, "LdrUnloadDll");
+
+	if (!InjectData.LdrUnloadDll)
+		return FALSE;
+
+	InjectData.LdrGetDllHandle = (DWORD64)GetRemoteProcedureAddress(ProcessHandle, hNtdll, "LdrGetDllHandle");
+
+	if (!InjectData.LdrGetDllHandle)
+		return FALSE;
+
+	InjectData.RtlInitUnicodeString = (DWORD64)GetRemoteProcedureAddress(ProcessHandle, hNtdll, "RtlInitUnicodeString");
+
+	if (!InjectData.RtlInitUnicodeString)
+		return FALSE;
 
 	InjectData.UnloadDll = UnloadDll;
 
 	wcscpy_s(InjectData.DllPath, _countof(InjectData.DllPath), DllPath);
 
-	DWORD64 hNtdll = GetRemoteModuleHandle64(ProcessHandle, L"ntdll.dll");
+	PVOID ShellData = VirtualAllocEx(ProcessHandle, NULL, sizeof(InjectData), MEM_COMMIT, PAGE_READWRITE);
+
+	if (ShellData)
+	{
+		if (WriteProcessMemory(ProcessHandle, ShellData, &InjectData, sizeof(InjectData), NULL))
+		{
+			int LoaderSize = (ProcessBit == 64) ? sizeof(LoaderDll64) : sizeof(LoaderDll32);
+
+			PVOID ShellCode = VirtualAllocEx(ProcessHandle, NULL, LoaderSize, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+
+			if (ShellCode)
+			{
+				PVOID pDllLoader = (ProcessBit == 64) ? (PVOID)&LoaderDll64 : &LoaderDll32;
+
+				if (WriteProcessMemory(ProcessHandle, ShellCode, pDllLoader, LoaderSize, NULL))
+				{
+					HANDLE ThreadHandle = 0;
+
+					CLIENT_ID ClientID = { 0 };
+
+					NTSTATUS Status = RtlCreateUserThread(ProcessHandle, NULL, FALSE, 0, 0, 0, (PUSER_THREAD_START_ROUTINE)ShellCode, ShellData, &ThreadHandle, &ClientID);
+
+					if (NT_SUCCESS(Status))
+					{
+						if (WaitForSingleObject(ThreadHandle, INFINITE) != WAIT_FAILED)
+						{
+							GetExitCodeThread(ThreadHandle, (PDWORD)&Status);
+
+							if (!UnloadDll)
+							{
+								HMODULE RemoteDll = GetRemoteModuleHandle(ProcessHandle, DllPath, 0);
+
+								Result = ((SIZE_T)RemoteDll > 0);
+
+								if (DllBase)
+									*DllBase = RemoteDll;
+							}
+							else
+								Result = NT_SUCCESS(Status);
+						}
+						CloseHandle(ThreadHandle);
+					}
+					RtlSetLastError(Status);
+				}
+				VirtualFreeEx(ProcessHandle, ShellCode, 0, MEM_RELEASE);
+			}
+		}
+		VirtualFreeEx(ProcessHandle, ShellData, 0, MEM_RELEASE);
+	}
+	return Result;
+}
+
+/*
+   WoW64 -> x64
+*/
+#ifdef _M_IX86
+BOOLEAN InjectDllWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_ PDWORD64 DllBase, _In_opt_ BOOLEAN UnloadDll)
+{
+	BOOLEAN Result = FALSE;
+
+	TDllLoader InjectData = { 0 };
+
+	InjectData.UnloadDll = UnloadDll;
+
+	wcscpy_s(InjectData.DllPath, _countof(InjectData.DllPath), DllPath);
+
+	DWORD64 hNtdll = GetRemoteModuleHandleWoW64(ProcessHandle, L"ntdll.dll");
 
 	if (!hNtdll)
 		return FALSE;
 
-	InjectData.LdrLoadDll = GetRemoteProcedureAddress64(ProcessHandle, hNtdll, "LdrLoadDll");
+	InjectData.LdrLoadDll = GetRemoteProcedureAddressWoW64(ProcessHandle, hNtdll, "LdrLoadDll");
 
 	if (!InjectData.LdrLoadDll)
 		return FALSE;
 
-	InjectData.LdrUnloadDll = GetRemoteProcedureAddress64(ProcessHandle, hNtdll, "LdrUnloadDll");
+	InjectData.LdrUnloadDll = GetRemoteProcedureAddressWoW64(ProcessHandle, hNtdll, "LdrUnloadDll");
 
 	if (!InjectData.LdrUnloadDll)
 		return FALSE;
 
-	InjectData.LdrGetDllHandle = GetRemoteProcedureAddress64(ProcessHandle, hNtdll, "LdrGetDllHandle");
+	InjectData.LdrGetDllHandle = GetRemoteProcedureAddressWoW64(ProcessHandle, hNtdll, "LdrGetDllHandle");
 
 	if (!InjectData.LdrGetDllHandle)
 		return FALSE;
 
-	InjectData.RtlInitUnicodeString = GetRemoteProcedureAddress64(ProcessHandle, hNtdll, "RtlInitUnicodeString");
+	InjectData.RtlInitUnicodeString = GetRemoteProcedureAddressWoW64(ProcessHandle, hNtdll, "RtlInitUnicodeString");
 
 	if (!InjectData.RtlInitUnicodeString)
 		return FALSE;
@@ -817,13 +1011,23 @@ BOOLEAN InjectDllWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_
 					{
 						if (WaitForSingleObject((HANDLE)ThreadHandle, INFINITE) != WAIT_FAILED)
 						{
-							GetExitCodeThread((HANDLE)ThreadHandle, &Result);
+							GetExitCodeThread((HANDLE)ThreadHandle, (PDWORD)&Status);
 
-							if (!UnloadDll && DllBase)
-								*DllBase = GetRemoteModuleHandle64(ProcessHandle, DllPath);
+							if (!UnloadDll)
+							{
+								DWORD64 RemoteDll = GetRemoteModuleHandleWoW64(ProcessHandle, DllPath);
+
+								Result = (RemoteDll > 0);
+
+								if (DllBase)
+									*DllBase = RemoteDll;
+							}
+							else
+								Result = NT_SUCCESS(Status);
 						}
 						CloseHandle((HANDLE)ThreadHandle);
 					}
+					RtlSetLastError(Status);
 				}
 				LoaderSize = 0;
 
@@ -834,106 +1038,15 @@ BOOLEAN InjectDllWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_
 
 		NtWow64FreeVirtualMemory64(ProcessHandle, &ShellData, &ShellSize, MEM_RELEASE);
 	}
-	return (BOOLEAN)Result;
-}
-
-/*
-   x32 -> x32
-*/
-BOOLEAN InjectDll(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_ BOOLEAN UnloadDll, _In_opt_ PDWORD DllBase)
-{
-	// Shell32.asm
-	static BYTE LoaderDll32[119] =
-	{
-	    0x55, 0x89, 0xE5, 0x83, 0xEC, 0x0C, 0x53, 0x8B, 0x5D, 0x08, 0x8D, 0x53, 0x14, 0x52, 0x8D, 0x55,
-	    0xF8, 0x52, 0xFF, 0x53, 0x10, 0xC7, 0x45, 0xF4, 0x00, 0x00, 0x00, 0x00, 0x8D, 0x55, 0xF4, 0x52,
-	    0x8D, 0x55, 0xF8, 0x52, 0x6A, 0x00, 0x6A, 0x00, 0xFF, 0x53, 0x0C, 0x80, 0x3B, 0x01, 0x75, 0x1F,
-	    0x83, 0x7D, 0xF4, 0x00, 0x76, 0x19, 0xFF, 0x75, 0xF4, 0xFF, 0x53, 0x08, 0x83, 0xF8, 0x00, 0x75,
-	    0x07, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xEB, 0x05, 0xB8, 0x00, 0x00, 0x00, 0x00, 0xEB, 0x23, 0x80,
-	    0x3B, 0x00, 0x75, 0x19, 0x8D, 0x55, 0xF4, 0x52, 0x8D, 0x55, 0xF8, 0x52, 0x6A, 0x00, 0x6A, 0x00,
-	    0xFF, 0x53, 0x04, 0x83, 0xF8, 0x00, 0x75, 0x03, 0x8B, 0x45, 0xF4, 0xEB, 0x05, 0xB8, 0x00, 0x00,
-	    0x00, 0x00, 0x5B, 0xC9, 0xC2, 0x04, 0x00
-	};
-
-	BOOLEAN Result = FALSE;
-
-	TDllLoader InjectData = { 0 };
-
-	InjectData.UnloadDll = UnloadDll;
-
-	wcscpy_s(InjectData.DllPath, _countof(InjectData.DllPath), DllPath);
-
-	HANDLE hNtdll = (HANDLE)GetRemoteModuleHandle(ProcessHandle, L"ntdll.dll", FALSE);
-
-	if (!hNtdll)
-		return FALSE;
-
-	InjectData.LdrLoadDll = (pfnLdrLoadDll)GetRemoteProcedureAddress(ProcessHandle, hNtdll, "LdrLoadDll");
-
-	if (!InjectData.LdrLoadDll)
-		return FALSE;
-
-	InjectData.LdrUnloadDll = (pfnLdrUnloadDll)GetRemoteProcedureAddress(ProcessHandle, hNtdll, "LdrUnloadDll");
-
-	if (!InjectData.LdrUnloadDll)
-		return FALSE;
-
-	InjectData.LdrGetDllHandle = (pfnLdrGetDllHandle)GetRemoteProcedureAddress(ProcessHandle, hNtdll, "LdrGetDllHandle");
-
-	if (!InjectData.LdrGetDllHandle)
-		return FALSE;
-
-	InjectData.RtlInitUnicodeString = (pfnRtlInitUnicodeString)GetRemoteProcedureAddress(ProcessHandle, hNtdll, "RtlInitUnicodeString");
-
-	if (!InjectData.RtlInitUnicodeString)
-		return FALSE;
-
-	PVOID ShellData = VirtualAllocEx(ProcessHandle, NULL, sizeof(InjectData), MEM_COMMIT, PAGE_READWRITE);
-
-	if (ShellData)
-	{
-		if (WriteProcessMemory(ProcessHandle, ShellData, &InjectData, sizeof(InjectData), NULL))
-		{
-			PVOID ShellCode = VirtualAllocEx(ProcessHandle, NULL, sizeof(LoaderDll32), MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-
-			if (ShellCode)
-			{
-				if (WriteProcessMemory(ProcessHandle, ShellCode, &LoaderDll32, sizeof(LoaderDll32), NULL))
-				{
-					HANDLE ThreadHandle = 0;
-
-					CLIENT_ID ClientID = { 0 };
-
-					NTSTATUS Status = RtlCreateUserThread(ProcessHandle, NULL, FALSE, 0, 0, 0, (PUSER_THREAD_START_ROUTINE)ShellCode, ShellData, &ThreadHandle, &ClientID);
-
-					if (NT_SUCCESS(Status))
-					{
-						if (WaitForSingleObject(ThreadHandle, INFINITE) != WAIT_FAILED)
-						{
-							DWORD Temp = 0;
-
-							GetExitCodeThread(ThreadHandle, (LPDWORD)&Temp);
-
-							if (!UnloadDll && DllBase)
-								*DllBase = Temp;
-
-							Result = Temp ? TRUE : FALSE;
-						}
-						CloseHandle(ThreadHandle);
-					}
-				}
-				VirtualFreeEx(ProcessHandle, ShellCode, 0, MEM_RELEASE);
-			}
-		}
-		VirtualFreeEx(ProcessHandle, ShellData, 0, MEM_RELEASE);
-	}
 	return Result;
 }
 #endif
 
+#endif
+
 /*
 */
-BOOLEAN CrossInjectDll(_In_ DWORD ProcessID, _In_ LPCWSTR DllPath, _In_opt_ BOOLEAN UnloadDll, _In_opt_ PDWORD64 DllBase)
+BOOLEAN CrossInjectDll(_In_ DWORD ProcessID, _In_ LPCWSTR DllPath, _In_opt_ PDWORD64 DllBase, _In_opt_ BOOLEAN UnloadDll = FALSE)
 {
 	BOOLEAN Result = FALSE;
 
@@ -941,16 +1054,31 @@ BOOLEAN CrossInjectDll(_In_ DWORD ProcessID, _In_ LPCWSTR DllPath, _In_opt_ BOOL
 
 	if (ProcessHandle)
 	{
-		switch (GetProcessBit(ProcessHandle))
+		int ProcessBit = GetProcessBit(ProcessHandle);
+
+		if (ProcessBit == 32)
 		{
-		    case 32: Result = InjectDll(ProcessHandle, DllPath, UnloadDll, (PDWORD)DllBase);
-			    break;
-		    case 64: Result = InjectDllWoW64(ProcessHandle, DllPath, UnloadDll, DllBase);
-			    break;
+			Result = InjectDll(ProcessHandle, DllPath, (PVOID*)DllBase, UnloadDll);
+		}
+		else if (ProcessBit == 64)
+		{
+#ifdef _M_IX86
+			if (IsWoW64())
+				Result = InjectDllWoW64(ProcessHandle, DllPath, DllBase, UnloadDll);
+#else
+			Result = InjectDll(ProcessHandle, DllPath, (PVOID*)DllBase, UnloadDll);
+#endif
 		}
 		CloseHandle(ProcessHandle);
 	}
 	return Result;
+}
+
+/*
+*/
+BOOLEAN CrossUnloadDll(_In_ DWORD ProcessID, _In_ LPCWSTR DllPath)
+{
+	return CrossInjectDll(ProcessID, DllPath, NULL, TRUE);
 }
 
 /*
@@ -963,9 +1091,9 @@ DWORD64 CreateProcessWithDll(_In_ LPCWSTR ProcessName, _In_opt_ LPWSTR CommandLi
 
 	ShellInfo.cbSize = sizeof(ShellInfo);
 
-	ShellInfo.fMask  = SEE_MASK_NOCLOSEPROCESS;
+	ShellInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
 
-	ShellInfo.hwnd   = NULL;
+	ShellInfo.hwnd = NULL;
 
 	ShellInfo.lpVerb = L"open";
 
@@ -991,7 +1119,7 @@ DWORD64 CreateProcessWithDll(_In_ LPCWSTR ProcessName, _In_opt_ LPWSTR CommandLi
 			{
 				CloseHandle(ShellInfo.hProcess);
 
-				if (CrossInjectDll(ProcessID, DllPath, FALSE, &DllAddress))
+				if (CrossInjectDll(ProcessID, DllPath, &DllAddress, FALSE))
 				{
 					if (ResultPID)
 						*ResultPID = ProcessID;

@@ -17,11 +17,11 @@ struc UNICODE_STRING
 
 struc TDllLoader
 {
-   .UnloadDll dd ?
-   .LdrLoadDll dd ?
-   .LdrUnloadDll dd ?
-   .LdrGetDllHandle dd ?
-   .RtlInitUnicodeString dd ?
+   .UnloadDll dq ?
+   .LdrLoadDll dq ?
+   .LdrUnloadDll dq ?
+   .LdrGetDllHandle dq ?
+   .RtlInitUnicodeString dq ?
    .DllPath dw MAX_PATH dup (?)
 }
 
@@ -39,32 +39,20 @@ proc DllLoader32 uses ebx, Parameters
 
   end virtual
 
-      invoke Loader.RtlInitUnicodeString, addr DllName, addr Loader.DllPath
+      stdcall dword [Loader.RtlInitUnicodeString], addr DllName, addr Loader.DllPath
 
       mov  dword [DllHandle], 0
 
-      invoke Loader.LdrGetDllHandle, 0, 0, addr DllName, addr DllHandle
+      stdcall dword [Loader.LdrGetDllHandle], 0, 0, addr DllName, addr DllHandle
 
       .if ( byte [Loader.UnloadDll] = TRUE ) & ( dword [DllHandle] > 0 )
 
-          invoke Loader.LdrUnloadDll, dword [DllHandle]
-
-          .if eax = STATUS_SUCCESS
-              mov  eax, TRUE
-          .else
-              mov  eax, FALSE
-          .endif
+          stdcall dword [Loader.LdrUnloadDll], dword [DllHandle]
 
       .elseif ( byte [Loader.UnloadDll] = FALSE )
 
-         invoke Loader.LdrLoadDll, 0, 0, addr DllName, addr DllHandle
+         stdcall dword [Loader.LdrLoadDll], 0, 0, addr DllName, addr DllHandle
 
-          .if eax = STATUS_SUCCESS
-              mov  eax, dword [DllHandle]
-          .endif
-
-      .else
-         mov  eax, FALSE
       .endif
 .Exit:
       ret

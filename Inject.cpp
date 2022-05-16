@@ -196,7 +196,7 @@ int main(int argc, char* argv[])
 
 				DWORD64 DllBase = 0;
 
-				if (CrossInjectDll(ProcessID, FullPath, UnloadDll, &DllBase))
+				if (CrossInjectDll(ProcessID, FullPath, &DllBase, UnloadDll))
 				{
 					if (UnloadDll)
 						wprintf_s(L"Выгружено!\n");

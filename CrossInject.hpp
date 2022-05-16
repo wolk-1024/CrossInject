@@ -18,103 +18,43 @@
 #pragma once
 
 #include <Windows.h>
-#include <tlhelp32.h>
+#include <TlHelp32.h>
+#include <Psapi.h>
 
-#include "NTOS\ntos.h"
+#include "NTOS/ntos.h"
 
-#include "WoW64Utils\WoW64Utils.h"
-
-#pragma comment(lib, "ntdll.lib")
+#ifdef _M_IX86
+#include "WoW64Utils/WoW64Utils.h"
+#endif
 
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 
 /*
-#if defined(__cplusplus)
-extern "C" {
-#endif
-
-typedef struct _CLIENT_ID {
-	HANDLE UniqueProcess;
-	HANDLE UniqueThread;
-} CLIENT_ID, * PCLIENT_ID;
-
-typedef struct _UNICODE_STRING {
-	USHORT Length;
-	USHORT MaximumLength;
-	PWSTR  Buffer;
-} UNICODE_STRING, * PUNICODE_STRING;
-typedef const UNICODE_STRING* PCUNICODE_STRING;
-
-typedef NTSTATUS(*PUSER_THREAD_START_ROUTINE)(
-	PVOID ThreadParameter
-	);
-
-NTSYSAPI
-NTSTATUS
-NTAPI
-RtlCreateUserThread(
-	_In_ HANDLE Process,
-	_In_opt_ PSECURITY_DESCRIPTOR ThreadSecurityDescriptor,
-	_In_ BOOLEAN CreateSuspended,
-	_In_ ULONG StackZeroBits,
-	_In_opt_ SIZE_T MaximumStackSize,
-	_In_opt_ SIZE_T InitialStackSize,
-	_In_ PUSER_THREAD_START_ROUTINE StartAddress,
-	_In_opt_ PVOID Parameter,
-	_Out_opt_ PHANDLE Thread,
-	_Out_opt_ PCLIENT_ID ClientId);
-
-NTSYSAPI
-ULONG
-NTAPI
-RtlNtStatusToDosError(
-	_In_ NTSTATUS Status);
-
-NTSYSAPI
-VOID
-NTAPI
-RtlSetLastWin32Error(
-	_In_ LONG Win32Error);
-
-#ifdef __cplusplus
-}
-#endif
-*/
-
-typedef NTSTATUS(NTAPI *pfnLdrLoadDll) (
+typedef NTSTATUS(NTAPI* pfnLdrLoadDll) (
 	_In_opt_ PCWSTR DllPath,
 	_In_opt_ PULONG DllCharacteristics,
 	_In_  PCUNICODE_STRING DllName,
-	_Out_ PVOID *DllHandle
+	_Out_ PVOID* DllHandle
 	);
 
-typedef NTSTATUS(NTAPI *pfnLdrUnloadDll) (
+typedef NTSTATUS(NTAPI* pfnLdrUnloadDll) (
 	_In_ PVOID DllHandle
 	);
 
-typedef NTSTATUS(NTAPI *pfnLdrGetDllHandle) (
+typedef NTSTATUS(NTAPI* pfnLdrGetDllHandle) (
 	_In_opt_ PCWSTR DllPath,
 	_In_opt_ PULONG DllCharacteristics,
 	_In_ PCUNICODE_STRING DllName,
-	_Out_ PVOID *DllHandle
+	_Out_ PVOID* DllHandle
 	);
 
-typedef VOID(NTAPI *pfnRtlInitUnicodeString) (
+typedef VOID(NTAPI* pfnRtlInitUnicodeString) (
 	_Out_ PUNICODE_STRING DestinationString,
 	_In_opt_ PCWSTR SourceString
 	);
+*/
 
 typedef struct TDllLoader
-{
-	BOOLEAN UnloadDll;
-	pfnLdrLoadDll LdrLoadDll;
-	pfnLdrUnloadDll LdrUnloadDll;
-	pfnLdrGetDllHandle LdrGetDllHandle;
-	pfnRtlInitUnicodeString RtlInitUnicodeString;
-	WCHAR DllPath[_MAX_PATH];
-} TDllLoader, *PDllLoader;
-
-typedef struct TDllLoader64
 {
 	BOOLEAN UnloadDll;
 	DWORD64 LdrLoadDll;
@@ -122,7 +62,32 @@ typedef struct TDllLoader64
 	DWORD64 LdrGetDllHandle;
 	DWORD64 RtlInitUnicodeString;
 	WCHAR DllPath[_MAX_PATH];
-} TDllLoader64, *PDllLoader64;
+} TDllLoader, * PDllLoader;
+
+// Shell32.asm
+static BYTE LoaderDll32[87] =
+{
+	0x55, 0x89, 0xE5, 0x83, 0xEC, 0x0C, 0x53, 0x8B, 0x5D, 0x08, 0x8D, 0x53, 0x28, 0x52, 0x8D, 0x55,
+	0xF8, 0x52, 0xFF, 0x53, 0x20, 0xC7, 0x45, 0xF4, 0x00, 0x00, 0x00, 0x00, 0x8D, 0x55, 0xF4, 0x52,
+	0x8D, 0x55, 0xF8, 0x52, 0x6A, 0x00, 0x6A, 0x00, 0xFF, 0x53, 0x18, 0x80, 0x3B, 0x01, 0x75, 0x0E,
+	0x83, 0x7D, 0xF4, 0x00, 0x76, 0x08, 0xFF, 0x75, 0xF4, 0xFF, 0x53, 0x10, 0xEB, 0x14, 0x80, 0x3B,
+	0x00, 0x75, 0x0F, 0x8D, 0x55, 0xF4, 0x52, 0x8D, 0x55, 0xF8, 0x52, 0x6A, 0x00, 0x6A, 0x00, 0xFF,
+	0x53, 0x08, 0x5B, 0xC9, 0xC2, 0x04, 0x00
+};
+
+// Shell64.asm
+static BYTE LoaderDll64[142] =
+{
+	0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x28, 0x53, 0x48, 0x89, 0xCB, 0x48, 0x83, 0xEC, 0x20,
+	0x48, 0x8D, 0x4D, 0xE8, 0x48, 0x8D, 0x53, 0x28, 0xFF, 0x53, 0x20, 0x48, 0x83, 0xC4, 0x20, 0x48,
+	0xC7, 0x45, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x48, 0x83, 0xEC, 0x20, 0x48, 0xC7, 0xC1, 0x00, 0x00,
+	0x00, 0x00, 0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x45, 0xE8, 0x4C, 0x8D, 0x4D,
+	0xE0, 0xFF, 0x53, 0x18, 0x48, 0x83, 0xC4, 0x20, 0x80, 0x3B, 0x01, 0x75, 0x18, 0x48, 0x83, 0x7D,
+	0xE0, 0x00, 0x76, 0x11, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x4D, 0xE0, 0xFF, 0x53, 0x10, 0x48,
+	0x83, 0xC4, 0x20, 0xEB, 0x26, 0x80, 0x3B, 0x00, 0x75, 0x21, 0x48, 0x83, 0xEC, 0x20, 0x48, 0xC7,
+	0xC1, 0x00, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC2, 0x00, 0x00, 0x00, 0x00, 0x4C, 0x8D, 0x45, 0xE8,
+	0x4C, 0x8D, 0x4D, 0xE0, 0xFF, 0x53, 0x08, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC9, 0xC3
+};
 
 DWORD GetProcessBit(_In_ HANDLE ProcessHandle);
 
@@ -140,22 +105,12 @@ DWORD GetProcessIDByWindow(_In_ LPCWSTR WindowName);
 
 HANDLE OpenProcessByName(_In_ LPCWSTR ProcessName, _In_ ACCESS_MASK DesiredAccess);
 
-DWORD GetRemoteModuleHandle32(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName);
+DWORD64 CrossGetRemoteModuleHandle(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName, _In_opt_ BOOLEAN x64DllFrom32);
 
-DWORD64 GetRemoteModuleHandle64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName);
+DWORD64 CrossGetRemoteProcedureAddress(_In_ HANDLE ProcessHandle, _In_ DWORD64 ModuleBase, _In_ LPCSTR ProcedureName, _In_opt_ BOOLEAN x64ProcFrom32);
 
-DWORD64 GetRemoteModuleHandle(_In_ HANDLE ProcessHandle, _In_ LPCWSTR ModuleName, _In_opt_ BOOLEAN IsWoW64);
+BOOLEAN CrossInjectDll(_In_ DWORD ProcessID, _In_ LPCWSTR DllPath, _In_opt_ PDWORD64 DllBase, _In_opt_ BOOLEAN UnloadDll);
 
-DWORD64 GetRemoteModuleHandleA(_In_ HANDLE ProcessHandle, _In_ LPCSTR ModuleName, _In_opt_ BOOLEAN IsWoW64);
-
-DWORD64 GetRemoteProcedureAddress64(_In_ HANDLE ProcessHandle, _In_ DWORD64 ModuleBase, _In_ LPCSTR ProcedureName);
-
-DWORD GetRemoteProcedureAddress(_In_ HANDLE ProcessHandle, _In_ HANDLE ModuleBase, _In_ LPCSTR ProcedureName);
-
-BOOLEAN InjectDllWoW64(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_ BOOLEAN UnloadDll, _In_opt_ PDWORD64 DllBase);
-
-BOOLEAN InjectDll(_In_ HANDLE ProcessHandle, _In_ LPCWSTR DllPath, _In_opt_ BOOLEAN UnloadDll, _In_opt_ PDWORD DllBase);
-
-BOOLEAN CrossInjectDll(_In_ DWORD ProcessID, _In_ LPCWSTR DllPath, _In_opt_ BOOLEAN UnloadDll, _In_opt_ PDWORD64 DllBase);
+BOOLEAN CrossUnloadDll(_In_ DWORD ProcessID, _In_ LPCWSTR DllPath);
 
 DWORD64 CreateProcessWithDll(_In_ LPCWSTR ProcessName, _In_opt_ LPWSTR CommandLine, _In_ LPCWSTR DllPath, _Out_opt_ PDWORD ResultPID);

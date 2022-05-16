@@ -121,12 +121,18 @@
   <ItemGroup>
     <ClCompile Include="CrossInject.cpp" />
     <ClCompile Include="Inject.cpp" />
-    <ClCompile Include="WoW64Utils\WoW64Utils.c" />
+    <ClCompile Include="WoW64Utils\WoW64Utils.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CrossInject.hpp" />
     <ClInclude Include="NTOS\ntos.h" />
-    <ClInclude Include="WoW64Utils\WoW64Utils.h" />
+    <ClInclude Include="WoW64Utils\WoW64Utils.h">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+    </ClInclude>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

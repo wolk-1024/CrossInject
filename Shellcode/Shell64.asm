@@ -49,24 +49,10 @@ proc DllLoader64 c uses rbx
 
           invoke Loader.LdrUnloadDll, qword [DllHandle]
 
-          .if eax = STATUS_SUCCESS
-              mov  eax, TRUE
-          .else
-              mov  eax, FALSE
-          .endif
-
       .elseif ( byte [Loader.UnloadDll] = FALSE )
 
          invoke Loader.LdrLoadDll, 0, 0, addr DllName, addr DllHandle
 
-          .if eax = STATUS_SUCCESS
-              mov  eax, TRUE
-          .else
-              mov  eax, FALSE
-          .endif
-
-      .else
-         mov  eax, FALSE
       .endif
 .Exit:
       ret
